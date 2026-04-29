@@ -32,10 +32,10 @@ namespace BDTHPlugin
     private readonly IntPtr layoutWorldPtr;
     private readonly IntPtr housingModulePtr;
 
-    public unsafe LayoutWorld* Layout => (LayoutWorld*)layoutWorldPtr;
-    public unsafe HousingStructure* HousingStructure => Layout->HousingStruct;
+    public unsafe LayoutWorld* Layout => layoutWorldPtr != IntPtr.Zero ? (LayoutWorld*)Marshal.ReadIntPtr(layoutWorldPtr) : null;
+    public unsafe HousingStructure* HousingStructure => Layout != null ? Layout->HousingStruct : null;
     public unsafe HousingModule* HousingModule => housingModulePtr != IntPtr.Zero ? (HousingModule*)Marshal.ReadIntPtr(housingModulePtr) : null;
-    public unsafe HousingObjectManager* CurrentManager => HousingModule->GetCurrentManager();
+    public unsafe HousingObjectManager* CurrentManager => HousingModule != null ? HousingModule->GetCurrentManager() : null;
     public unsafe Camera* Camera => &CameraManager.Instance()->GetActiveCamera()->CameraBase.SceneCamera;
 
     public static unsafe AtkUnitBasePtr HousingLayout => Plugin.GameGui.GetAddonByName("HousingLayout", 1);
@@ -73,12 +73,11 @@ namespace BDTHPlugin
         // showcaseAnywhereRotate = Plugin.TargetModuleScanner.ScanText("88 87 98 02 00 00 48 8b 9c ?? ?? 00 00 00 4C 8B");
         // showcaseAnywherePlace = Plugin.TargetModuleScanner.ScanText("88 87 98 02 00 00 48 8B");
 
-        // Pointers for housing structures.
+        // Pointers for housing structures. Stored as static addresses; the actual
+        // pointers are dereferenced on each access since the globals only become
+        // non-null once the player is in a housing area.
         layoutWorldPtr = Plugin.TargetModuleScanner.GetStaticAddressFromSig("48 8B D1 48 8B 0D ?? ?? ?? ?? 48 85 C9 74 0A", 3);
         housingModulePtr = Plugin.TargetModuleScanner.GetStaticAddressFromSig("48 8B 05 ?? ?? ?? ?? 8B 52");
-
-        // Read the pointers.
-        layoutWorldPtr = Marshal.ReadIntPtr(layoutWorldPtr);
 
         // Select housing item.
         selectItemAddress = Plugin.TargetModuleScanner.ScanText("48 85 D2 0F 84 49 09 00 00 53 41 56 48 83 EC 48 48 89 6C 24 60 48 8B DA 48 89 74 24 70 4C 8B F1");

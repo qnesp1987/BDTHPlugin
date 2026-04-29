@@ -89,7 +89,7 @@ namespace BDTHPlugin.Interface.Windows
 
       ImGui.Separator();
 
-      if (Memory.HousingStructure->Mode == HousingLayoutMode.None)
+      if (Memory.HousingStructure == null || Memory.HousingStructure->Mode == HousingLayoutMode.None)
         DrawError("Enter housing mode to get started");
       else if (PluginMemory.GamepadMode)
         DrawError("Does not support Gamepad");
