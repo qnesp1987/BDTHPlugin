@@ -7,6 +7,8 @@ using System.Runtime.InteropServices;
 
 using FFXIVClientStructs.FFXIV.Client.Graphics.Scene;
 using CameraManager = FFXIVClientStructs.FFXIV.Client.Game.Control.CameraManager;
+using CSLayoutWorld = FFXIVClientStructs.FFXIV.Client.LayoutEngine.LayoutWorld;
+using CSHousingManager = FFXIVClientStructs.FFXIV.Client.Game.HousingManager;
 
 namespace BDTHPlugin
 {
@@ -28,13 +30,13 @@ namespace BDTHPlugin
     // public IntPtr showcaseAnywhereRotate;
     // public IntPtr showcaseAnywherePlace;
 
-    // Layout and housing module pointers.
-    private readonly IntPtr layoutWorldPtr;
-    private readonly IntPtr housingModulePtr;
-
-    public unsafe LayoutWorld* Layout => layoutWorldPtr != IntPtr.Zero ? (LayoutWorld*)Marshal.ReadIntPtr(layoutWorldPtr) : null;
+    // Layout and housing module pointers — sourced from FFXIVClientStructs so we
+    // don't have to maintain our own static-address sigs. CS resolves these
+    // dynamically each call and returns null when the global isn't initialised
+    // (e.g. before the player enters a housing area).
+    public unsafe LayoutWorld* Layout => (LayoutWorld*)CSLayoutWorld.Instance();
     public unsafe HousingStructure* HousingStructure => Layout != null ? Layout->HousingStruct : null;
-    public unsafe HousingModule* HousingModule => housingModulePtr != IntPtr.Zero ? (HousingModule*)Marshal.ReadIntPtr(housingModulePtr) : null;
+    public unsafe HousingModule* HousingModule => (HousingModule*)CSHousingManager.Instance();
     public unsafe HousingObjectManager* CurrentManager => HousingModule != null ? HousingModule->GetCurrentManager() : null;
     public unsafe Camera* Camera => &CameraManager.Instance()->GetActiveCamera()->CameraBase.SceneCamera;
 
@@ -64,41 +66,53 @@ namespace BDTHPlugin
 
     public PluginMemory()
     {
-      try
-      {
-        // Assembly address for asm rewrites.
-        placeAnywhere = Plugin.TargetModuleScanner.ScanText("C6 ?? ?? ?? 00 00 00 8B FE 48 89") + 6;
-        wallAnywhere = Plugin.TargetModuleScanner.ScanText("48 85 C0 74 ?? C6 87 ?? ?? 00 00 00") + 11;
-        wallmountAnywhere = Plugin.TargetModuleScanner.ScanText("c6 87 83 01 00 00 00 48 83 c4 ??") + 6;
-        // showcaseAnywhereRotate = Plugin.TargetModuleScanner.ScanText("88 87 98 02 00 00 48 8b 9c ?? ?? 00 00 00 4C 8B");
-        // showcaseAnywherePlace = Plugin.TargetModuleScanner.ScanText("88 87 98 02 00 00 48 8B");
+      // Each scan is independently fallible — a stale sig for one feature
+      // shouldn't take out the whole plugin. Anything that fails is logged
+      // and left as IntPtr.Zero / null; downstream code already null-guards.
 
-        // Pointers for housing structures. Stored as static addresses; the actual
-        // pointers are dereferenced on each access since the globals only become
-        // non-null once the player is in a housing area.
-        layoutWorldPtr = Plugin.TargetModuleScanner.GetStaticAddressFromSig("48 8B D1 48 8B 0D ?? ?? ?? ?? 48 85 C9 74 0A", 3);
-        housingModulePtr = Plugin.TargetModuleScanner.GetStaticAddressFromSig("48 8B 05 ?? ?? ?? ?? 8B 52");
+      // Assembly address for asm rewrites (place-anywhere / wall / wallmount patches).
+      var pa = TryScan("placeAnywhere",     "C6 ?? ?? ?? 00 00 00 8B FE 48 89");
+      var wa = TryScan("wallAnywhere",      "48 85 C0 74 ?? C6 87 ?? ?? 00 00 00");
+      var wm = TryScan("wallmountAnywhere", "c6 87 83 01 00 00 00 48 83 c4 ??");
+      placeAnywhere     = pa != IntPtr.Zero ? pa + 6  : IntPtr.Zero;
+      wallAnywhere      = wa != IntPtr.Zero ? wa + 11 : IntPtr.Zero;
+      wallmountAnywhere = wm != IntPtr.Zero ? wm + 6  : IntPtr.Zero;
 
-        // Select housing item.
-        selectItemAddress = Plugin.TargetModuleScanner.ScanText("48 85 D2 0F 84 49 09 00 00 53 41 56 48 83 EC 48 48 89 6C 24 60 48 8B DA 48 89 74 24 70 4C 8B F1");
+      // Native housing functions.
+      selectItemAddress = TryScan("selectItem", "48 85 D2 0F 84 49 09 00 00 53 41 56 48 83 EC 48 48 89 6C 24 60 48 8B DA 48 89 74 24 70 4C 8B F1");
+      if (selectItemAddress != IntPtr.Zero)
         SelectItem = Marshal.GetDelegateForFunctionPointer<SelectItemDelegate>(selectItemAddress);
 
-        // Address for the place item function.
-        placeHousingItemAddress = Plugin.TargetModuleScanner.ScanText("40 53 48 83 EC 20 8B 02 48 8B D9 89 41 50 8B 42 04 89 41 54 8B 42 08 89 41 58 48 83 E9 80");
+      placeHousingItemAddress = TryScan("placeHousingItem", "40 53 48 83 EC 20 8B 02 48 8B D9 89 41 50 8B 42 04 89 41 54 8B 42 08 89 41 58 48 83 E9 80");
+      if (placeHousingItemAddress != IntPtr.Zero)
         PlaceHousingItem = Marshal.GetDelegateForFunctionPointer<PlaceHousingItemDelegate>(placeHousingItemAddress);
 
-        // Housing item model update.
-        housingLayoutModelUpdateAddress = Plugin.TargetModuleScanner.ScanText("48 89 6C 24 ?? 48 89 74 24 ?? 48 89 7C 24 ?? 41 56 48 83 EC 50 48 8B E9 48 8B 49");
+      housingLayoutModelUpdateAddress = TryScan("housingLayoutModelUpdate", "48 89 6C 24 ?? 48 89 74 24 ?? 48 89 7C 24 ?? 41 56 48 83 EC 50 48 8B E9 48 8B 49");
+      if (housingLayoutModelUpdateAddress != IntPtr.Zero)
         HousingLayoutModelUpdate = Marshal.GetDelegateForFunctionPointer<HousingLayoutModelUpdateDelegate>(housingLayoutModelUpdateAddress);
 
+      try
+      {
         var config = Plugin.GetConfiguration();
-
-        if (config.PlaceAnywhere)
-          SetPlaceAnywhere(Plugin.GetConfiguration().PlaceAnywhere);
+        if (config.PlaceAnywhere && placeAnywhere != IntPtr.Zero && wallAnywhere != IntPtr.Zero && wallmountAnywhere != IntPtr.Zero)
+          SetPlaceAnywhere(config.PlaceAnywhere);
       }
       catch (Exception ex)
       {
-        Plugin.Log.Error(ex, "Error while calling PluginMemory.ctor()");
+        Plugin.Log.Error(ex, "Error while applying initial PlaceAnywhere state");
+      }
+    }
+
+    private static IntPtr TryScan(string name, string sig)
+    {
+      try
+      {
+        return Plugin.TargetModuleScanner.ScanText(sig);
+      }
+      catch (Exception ex)
+      {
+        Plugin.Log.Warning(ex, $"Sig scan failed for '{name}' — feature disabled. The signature may be stale after a game patch.");
+        return IntPtr.Zero;
       }
     }
 
@@ -276,7 +290,7 @@ namespace BDTHPlugin
 
           // Update the model of active item, the game doesn't do this for wall mounted and outside in rotate mode
           var item = HousingStructure->ActiveItem;
-          if (item != null)
+          if (item != null && HousingLayoutModelUpdate != null)
             HousingLayoutModelUpdate((IntPtr)item + 0x80);
         }
       }

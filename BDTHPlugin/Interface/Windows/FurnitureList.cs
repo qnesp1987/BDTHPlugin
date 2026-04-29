@@ -100,7 +100,7 @@ namespace BDTHPlugin.Interface.Windows
 
               ImGui.PushStyleVar(ImGuiStyleVar.ItemSpacing, new Vector2(0f, 4f));
               if (ImGui.Selectable($"##Item{i}", thisActive, ImGuiSelectableFlags.SpanAllColumns, new(0, 20 * fontScale)))
-                Memory.SelectItem((IntPtr)Memory.HousingStructure, (IntPtr)items[i].Item);
+                Memory.SelectItem?.Invoke((IntPtr)Memory.HousingStructure, (IntPtr)items[i].Item);
               ImGui.PopStyleVar();
 
               if (thisActive)
